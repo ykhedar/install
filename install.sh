@@ -15,9 +15,9 @@ TOKEN_DIR="$HOME/.skyclient"
 TOKEN_FILE="$TOKEN_DIR/token"
 
 # Configuration URLs - update these with actual URLs
-FILEBROWSER_CONFIG_URL="https://raw.githubusercontent.com/your-repo/config/main/filebrowser-settings.json"
-DOCKER_COMPOSE_URL="https://raw.githubusercontent.com/your-repo/config/main/docker-compose.yaml"
-MAVLINK_ROUTER_CONFIG_URL="https://raw.githubusercontent.com/your-repo/config/main/mavlink-router.conf"
+FILEBROWSER_CONFIG_URL="https://raw.githubusercontent.com/ykhedar/install/main/filebrowser.json"
+DOCKER_COMPOSE_URL="https://raw.githubusercontent.com/ykhedar/install/main/docker-compose.yaml"
+MAVLINK_ROUTER_CONFIG_URL="https://raw.githubusercontent.com/ykhedar/install/main/mavlink-router.conf"
 
 # Debug flag - set to 1 to enable debug output
 DEBUG=${DEBUG:-0}
@@ -68,24 +68,18 @@ check_dependencies() {
     print_debug "Dependencies checked successfully"
 }
 
-# Function to install missing dependencies
+# Function to install missing dependencies using apt-get
 install_dependencies() {
     local deps_to_install=("$@")
     print_info "Installing dependencies: ${deps_to_install[*]}"
     
-    # Detect package manager and install accordingly
-    if command -v apt-get &> /dev/null; then
-        install_with_apt "${deps_to_install[@]}"
-    elif command -v yum &> /dev/null; then
-        install_with_yum "${deps_to_install[@]}"
-    elif command -v dnf &> /dev/null; then
-        install_with_dnf "${deps_to_install[@]}"
-    elif command -v pacman &> /dev/null; then
-        install_with_pacman "${deps_to_install[@]}"
-    elif command -v brew &> /dev/null; then
-        install_with_brew "${deps_to_install[@]}"
+    print_info "Updating package list and installing dependencies..."
+    apt-get update && apt-get install -y "${deps_to_install[@]}"
+    
+    if [ $? -eq 0 ]; then
+        print_success "Dependencies installed successfully"
     else
-        print_error "No supported package manager found. Please manually install: ${deps_to_install[*]}"
+        print_error "Failed to install dependencies"
         exit 1
     fi
     
@@ -96,93 +90,93 @@ install_dependencies() {
             exit 1
         fi
     done
-    
-    print_success "Dependencies installed successfully"
 }
 
-# Install functions for different package managers
-install_with_apt() {
-    local deps=("$@")
-    print_debug "Using apt-get package manager"
+# Function to install development environment (optional)
+install_dev_environment() {
+    print_info "Installing development environment..."
     
-    print_debug "Updating package list..."
-    sudo apt-get update
-    if [ $? -ne 0 ]; then
-        print_error "Failed to update package list"
+    print_info "[1/8] Updating package list and installing basic tools..."
+    apt-get update && apt-get install -y git wget curl nano net-tools
+    if [ $? -eq 0 ]; then
+        print_success "Basic tools installed successfully"
+    else
+        print_error "Failed to install basic tools"
         exit 1
     fi
     
-    for dep in "${deps[@]}"; do
-        print_debug "Installing $dep..."
-        sudo apt-get install -y "$dep"
-        if [ $? -ne 0 ]; then
-            print_error "Failed to install $dep"
-            exit 1
-        fi
-    done
-}
-
-install_with_yum() {
-    local deps=("$@")
-    print_debug "Using yum package manager"
-    
-    for dep in "${deps[@]}"; do
-        print_debug "Installing $dep..."
-        sudo yum install -y "$dep"
-        if [ $? -ne 0 ]; then
-            print_error "Failed to install $dep"
-            exit 1
-        fi
-    done
-}
-
-install_with_dnf() {
-    local deps=("$@")
-    print_debug "Using dnf package manager"
-    
-    for dep in "${deps[@]}"; do
-        print_debug "Installing $dep..."
-        sudo dnf install -y "$dep"
-        if [ $? -ne 0 ]; then
-            print_error "Failed to install $dep"
-            exit 1
-        fi
-    done
-}
-
-install_with_pacman() {
-    local deps=("$@")
-    print_debug "Using pacman package manager"
-    
-    print_debug "Updating package database..."
-    sudo pacman -Sy
-    if [ $? -ne 0 ]; then
-        print_error "Failed to update package database"
+    print_info "[2/8] Installing Docker..."
+    curl -fsSL https://get.docker.com | sh
+    if [ $? -eq 0 ]; then
+        print_success "Docker installed successfully"
+    else
+        print_error "Failed to install Docker"
         exit 1
     fi
     
-    for dep in "${deps[@]}"; do
-        print_debug "Installing $dep..."
-        sudo pacman -S --noconfirm "$dep"
-        if [ $? -ne 0 ]; then
-            print_error "Failed to install $dep"
-            exit 1
-        fi
-    done
-}
-
-install_with_brew() {
-    local deps=("$@")
-    print_debug "Using Homebrew package manager"
+    print_info "[3/8] Installing code-server..."
+    curl -fsSL https://code-server.dev/install.sh | sh
+    if [ $? -eq 0 ]; then
+        print_success "code-server installed successfully"
+    else
+        print_error "Failed to install code-server"
+        exit 1
+    fi
     
-    for dep in "${deps[@]}"; do
-        print_debug "Installing $dep..."
-        brew install "$dep"
-        if [ $? -ne 0 ]; then
-            print_error "Failed to install $dep"
-            exit 1
-        fi
-    done
+    print_info "[4/8] Enabling and starting code-server service..."
+    systemctl enable --now code-server@$USER
+    if [ $? -eq 0 ]; then
+        print_success "code-server service enabled and started"
+    else
+        print_error "Failed to enable code-server service"
+        exit 1
+    fi
+    
+    print_info "[5/8] Creating code-server configuration..."
+    mkdir -p ~/.config/code-server
+    cat << EOF > ~/.config/code-server/config.yaml
+bind-addr: 0.0.0.0:8085
+auth: password
+password: asdf
+cert: false
+EOF
+    if [ $? -eq 0 ]; then
+        print_success "Configuration file created at ~/.config/code-server/config.yaml"
+    else
+        print_error "Failed to create configuration file"
+        exit 1
+    fi
+    
+    print_info "[6/8] Restarting code-server service with new configuration..."
+    systemctl restart code-server@$USER
+    if [ $? -eq 0 ]; then
+        print_success "code-server service restarted successfully"
+    else
+        print_error "Failed to restart code-server service"
+        exit 1
+    fi
+    
+    print_info "[7/8] Checking code-server status..."
+    systemctl status code-server@$USER --no-pager
+    
+    print_info "[8/8] Installing Tailscale..."
+    curl -fsSL https://tailscale.com/install.sh | sh
+    if [ $? -eq 0 ]; then
+        print_success "Tailscale installed successfully"
+    else
+        print_error "Failed to install Tailscale"
+        exit 1
+    fi
+    
+    print_success "========================================="
+    print_success "Development environment setup completed!"
+    print_success "========================================="
+    print_info "Next steps:"
+    print_info "• code-server is running on port 8085"
+    print_info "• Login password: asdf"
+    print_info "• To use Docker, you may need to log out and back in"
+    print_info "• To connect Tailscale, run: tailscale up"
+    print_success "========================================="
 }
 
 # Function to create required directories
@@ -617,19 +611,27 @@ show_usage() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  -d, --debug      Enable debug output"
-    echo "  -s, --setup      Run initial system setup (create directories and download configs)"
-    echo "  --setup-only     Run setup only (don't perform login)"
-    echo "  -h, --help       Show this help message"
+    echo "  -d, --debug         Enable debug output"
+    echo "  -s, --setup         Run initial system setup (create directories and download configs)"
+    echo "  --setup-only        Run setup only (don't perform login)"
+    echo "  --install-dev       Install full development environment (Docker, code-server, Tailscale)"
+    echo "  --dev-only          Install development environment only (no login)"
+    echo "  -h, --help          Show this help message"
     echo ""
     echo "Environment variables:"
-    echo "  DEBUG=1          Enable debug output (alternative to -d)"
+    echo "  DEBUG=1             Enable debug output (alternative to -d)"
     echo ""
     echo "Setup creates:"
     echo "  • \$HOME/.skyclient directory structure"
     echo "  • \$HOME/.skyclient/filebrowser/config & database directories"
     echo "  • Configuration files from remote URLs with fallbacks"
     echo "  • \$HOME/autrikos directory"
+    echo ""
+    echo "Development environment installs:"
+    echo "  • Basic tools (git, wget, curl, nano, net-tools)"
+    echo "  • Docker"
+    echo "  • code-server (accessible on port 8085, password: asdf)"
+    echo "  • Tailscale"
 }
 
 # Main function
@@ -669,6 +671,8 @@ main() {
 # Parse command line arguments
 RUN_SETUP=0
 SETUP_ONLY=0
+INSTALL_DEV=0
+DEV_ONLY=0
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -683,6 +687,15 @@ while [[ $# -gt 0 ]]; do
         --setup-only)
             RUN_SETUP=1
             SETUP_ONLY=1
+            shift
+            ;;
+        --install-dev)
+            INSTALL_DEV=1
+            shift
+            ;;
+        --dev-only)
+            INSTALL_DEV=1
+            DEV_ONLY=1
             shift
             ;;
         -h|--help)
@@ -700,16 +713,26 @@ done
 # Run main function
 print_debug "About to call main function"
 
+# Install development environment if requested
+if [ "$INSTALL_DEV" = "1" ]; then
+    install_dev_environment
+fi
+
 # Run setup if requested
 if [ "$RUN_SETUP" = "1" ]; then
     run_setup
 fi
 
-# Run login unless setup-only was specified
-if [ "$SETUP_ONLY" = "0" ]; then
+# Run login unless setup-only or dev-only was specified
+if [ "$SETUP_ONLY" = "0" ] && [ "$DEV_ONLY" = "0" ]; then
     main "$@"
 else
-    print_info "Setup-only mode completed"
+    if [ "$SETUP_ONLY" = "1" ]; then
+        print_info "Setup-only mode completed"
+    fi
+    if [ "$DEV_ONLY" = "1" ]; then
+        print_info "Development environment installation completed"
+    fi
 fi
 
 print_debug "Script completed"
