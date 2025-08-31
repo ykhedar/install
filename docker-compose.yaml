@@ -1,0 +1,228 @@
+networks:
+  skyclient_network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/24 # Define the subnet for static IPs
+
+services:
+  traefik:
+    container_name: traefik
+    image: traefik:v3.0
+    restart: always
+    command:
+      - --api.dashboard=true
+      - --api.insecure=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.grpc.address=:8001
+    ports:
+      - "80:80"
+      - "8001:8001" # gRPC-Web proxy port
+      - "8080:8080" # Traefik dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      skyclient_network:
+        ipv4_address: 172.20.0.20
+
+  mediamtx:
+    container_name: mediamtx
+    image: khedar/rtsp-server:1.9.3
+    restart: always
+    ports:
+      - "8554:8554"
+      - "1935:1935"
+    environment:
+      MTX_WRITEQUEUESIZE: 8192
+      MTX_PROTOCOLS: tcp
+      MTX_PATHDEFAULTS_RECORD: "yes"
+      MTX_PATHDEFAULTS_RECORDPATH: /home/recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+    volumes:
+      - skyclient_data:/home
+    networks:
+      skyclient_network:
+        ipv4_address: 172.20.0.16
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.mediamtx-hls.rule=PathPrefix(`/streams/`)"
+      - "traefik.http.routers.mediamtx-hls.entrypoints=web"
+      - "traefik.http.services.mediamtx-hls.loadbalancer.server.port=8888"
+
+  agent-ui:
+    image: khedar/skyclient-agent-ui:20250830.6
+    ports:
+      - "3000:80"
+    environment:
+      - NODE_ENV=production
+      - REACT_APP_DEVICE_HOST=${REACT_APP_DEVICE_HOST}
+      - REACT_APP_DEVICE_PORT=${REACT_APP_DEVICE_PORT}
+      - REACT_APP_ENVIRONMENT=${REACT_APP_ENVIRONMENT}
+      - PUBLIC_PATH=${PUBLIC_PATH}
+    restart: unless-stopped
+    networks:
+      skyclient_network:
+        ipv4_address: 172.20.0.21
+    labels:
+      - "traefik.enable=true"
+      # Redirect /ui to /ui/
+      - "traefik.http.routers.agent-ui-redirect.rule=Path(`/ui`)"
+      - "traefik.http.routers.agent-ui-redirect.entrypoints=web"
+      - "traefik.http.routers.agent-ui-redirect.middlewares=add-trailing-slash"
+      - "traefik.http.middlewares.add-trailing-slash.redirectregex.regex=^(.*)/ui$"
+      - "traefik.http.middlewares.add-trailing-slash.redirectregex.replacement=$${1}/ui/"
+      # Main UI route
+      - "traefik.http.routers.agent-ui.rule=PathPrefix(`/ui/`)"
+      - "traefik.http.routers.agent-ui.entrypoints=web"
+      - "traefik.http.services.agent-ui.loadbalancer.server.port=80"
+
+  skyclient-agent:
+    container_name: skyclient-agent
+    image: khedar/skyclient_linux:20250826.1
+    platform: linux/amd64
+    privileged: true
+    restart: always
+    command: ["/skyclient", "start_agent"]
+    #ports:
+    #  - "8001:8001"
+    volumes:
+      - skyclient_data:/root/.skyclient
+      - /var/run/docker.sock:/var/run/docker.sock:ro # Read-only mode for added security
+      - /proc:/host/proc:ro # Host system information
+      - /etc:/host/etc:ro # Host system version info
+      - /sys:/host/sys:ro # Host system hardware info
+      - /:/host/rootfs:ro # Host root filesystem for disk usage
+    environment:
+      LOG_LEVEL: debug
+      AGENT_SERVER_PORT: 8001
+      DOCKER_COMPOSE_FILE: /infra/docker-compose.yaml
+    user: "0:0" # Ensure root permissions to access the Docker socket
+    cap_add:
+      - SYS_ADMIN # Required for nsenter to access host namespaces
+    networks:
+      skyclient_network:
+        ipv4_address: 172.20.0.10
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.skyclient-agent-grpc.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.skyclient-agent-grpc.entrypoints=grpc"
+      - "traefik.http.services.skyclient-agent-grpc.loadbalancer.server.port=8001"
+      - "traefik.http.services.skyclient-agent-grpc.loadbalancer.server.scheme=h2c"
+      - "traefik.http.middlewares.grpc-web.grpcWeb.allowOrigins=*"
+      - "traefik.http.routers.skyclient-agent-grpc.middlewares=grpc-web"
+
+  skyclient-mavsdk-proxy:
+    container_name: skyclient-mavsdk-proxy
+    image: khedar/skyclient_linux:20250826.1
+    platform: linux/amd64
+    restart: always
+    command: ["/skyclient", "start_mavsdk_proxy", "--autopilot_dialect", "arducopter", "--allow_gcs_control", "true"]
+    depends_on:
+      - mavsdk
+    ports:
+      - "8010:8010"
+    volumes:
+      - skyclient_data:/root/.skyclient
+      - ${HOME}/autrikos/mavlink-logs:/root/shared/logs
+    privileged: true
+    environment:
+      ENABLE_CAMERA_MANAGER: "true"
+      LOG_LEVEL: debug
+      MAVSDK_SERVER: mavsdk:50051
+      DEBUG_TELEMETRY: "true"
+      LOGS_LOCATIONS: /root/shared/logs
+      OFFLINE_PUBLISHED_VIDEO_COMMAND: "gst-launch-1.0 -v v4l2src device=%s ! video/x-h264, width=1280,height=720 ! h264parse ! rtspclientsink protocols=tcp location=rtsp://%s/%s"
+      MEDIA_MTX_SERVER: mediamtx:8554
+    networks:
+      skyclient_network:
+        ipv4_address: 172.20.0.12
+
+  filebrowser:
+    container_name: filebrowser
+    image: filebrowser/filebrowser:s6
+    privileged: true
+    restart: always
+    ports:
+      - "3001:80"
+    environment:
+      PUID: $(id -u)
+      PGID: $(id -g)
+    volumes:
+      - ${HOME}/autrikos:/srv
+      - ${HOME}/.skyclient/filebrowser/database:/database
+      - ${HOME}/.skyclient/filebrowser/config:/config
+    networks:
+      skyclient_network:
+        ipv4_address: 172.20.0.19
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.filebrowser.rule=PathPrefix(`/files`)"
+      - "traefik.http.routers.filebrowser.entrypoints=web"
+      - "traefik.http.services.filebrowser.loadbalancer.server.port=80"
+      - "traefik.http.middlewares.strip-files.stripprefix.prefixes=/files"
+      - "traefik.http.routers.filebrowser.middlewares=strip-files"
+
+  mavlink-router:
+    container_name: mavlink-router
+    image: khedar/mavlink-router:linux-20250827.1
+    restart: always
+    privileged: true
+    command: ["/mavlink-routerd", "0.0.0.0:14550"]
+    volumes:
+      - ${HOME}/autrikos/mavlink-logs:/root/autrikos/mavlink-logs
+      - ${HOME}/.skyclient/mavlink-router.conf:/etc/mavlink-router/main.conf:ro
+    networks:
+      skyclient_network:
+        ipv4_address: 172.20.0.15
+
+  mavsdk:
+    container_name: mavsdk
+    image: khedar/mavsdk:linux-20250703.1
+    ports:
+      - "14550:14550/udp"
+    restart: always
+    tty: true
+    command: ["/mavsdk_server", "tcpout://172.20.0.17:5760"]
+    depends_on:
+      - sitl
+    networks:
+      skyclient_network:
+        ipv4_address: 172.20.0.13
+
+  sitl:
+    container_name: sitl
+    image: khedar/apcopter-4.6.2-mavsdk-v3.6.0
+    pull_policy: always
+    environment:
+      APM_HOME_LAT: -47.397742
+      APM_HOME_LONG: -8.545594
+      APM_HOME_ALT: -488
+      APM_HOME_DIR: 180
+    command:
+      - "/apm-sitl/arducopter"
+      - "-S"
+      - "-w"
+      - "--model"
+      - "+"
+      - "--speedup"
+      - "3"
+      - "--defaults"
+      - "/apm-sitl/copter.parm"
+      - "-I0"
+      - "--home"
+      - "-47.397742,-8.545594,-488,180"
+      - "--serial0=tcp:5760:wait"
+      - "--serial1=udpclient:172.20.0.15:14550"
+    networks:
+      skyclient_network:
+        ipv4_address: 172.20.0.17
+
+volumes:
+  skyclient_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${HOME}/.skyclient
