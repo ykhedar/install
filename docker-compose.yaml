@@ -52,7 +52,7 @@ services:
       - "traefik.http.services.mediamtx-hls.loadbalancer.server.port=8888"
 
   agent-ui:
-    image: khedar/skyclient-agent-ui:20250830.6
+    image: khedar/skyclient-agent-ui:20250902.5
     ports:
       - "3000:80"
     environment:
@@ -80,7 +80,7 @@ services:
 
   skyclient-agent:
     container_name: skyclient-agent
-    image: khedar/skyclient_linux:20250826.1
+    image: khedar/skyclient_linux:20250902.1
     platform: linux/amd64
     privileged: true
     restart: always
@@ -115,7 +115,7 @@ services:
 
   skyclient-mavsdk-proxy:
     container_name: skyclient-mavsdk-proxy
-    image: khedar/skyclient_linux:20250826.1
+    image: khedar/skyclient_linux:20250902.1
     platform: linux/amd64
     restart: always
     command: ["/skyclient", "start_mavsdk_proxy", "--autopilot_dialect", "arducopter", "--allow_gcs_control", "true"]
